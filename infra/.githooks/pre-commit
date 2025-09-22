@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+say()  { printf "\033[1;34m[pre-commit]\033[0m %s\n" "$*"; }
+fail() { printf "\033[1;31m[pre-commit]\033[0m %s\n" "$*"; exit 1; }
+
+STAGED="$(git diff --cached --name-only || true)"
+[ -z "$STAGED" ] && exit 0
+
+# 1) Bloquear archivos sensibles por nombre
+if echo "$STAGED" | grep -E '\.tfvars(\.json)?$' >/dev/null; then
+  fail "Blocked: committing *.tfvars files. Use env vars or locals, never commit tfvars."
+fi
+
+# 2) Escaneo simple de secretos en archivos staged (texto)
+SECRETS_PAT='(AWS_SECRET_ACCESS_KEY|BEGIN RSA PRIVATE KEY|BEGIN OPENSSH PRIVATE KEY)'
+while IFS= read -r f; do
+  [ ! -f "$f" ] && continue
+  # omitir binarios y zips
+  if file "$f" | grep -qi 'text'; then
+    if grep -E -I -n "$SECRETS_PAT" "$f" >/dev/null 2>&1; then
+      fail "Potential secret detected in: $f"
+    fi
+  fi
+done <<< "$STAGED"
+
+# 3) Terraform fmt (solo si hay .tf modificados y terraform está instalado)
+if echo "$STAGED" | grep -E '\.tf$' >/dev/null 2>&1; then
+  if command -v terraform >/dev/null 2>&1; then
+    say "Running: terraform fmt -check -recursive infra"
+    terraform fmt -check -recursive infra || fail "Run 'terraform fmt -recursive infra' to fix formatting."
+    # validate si ya se hizo init
+    if [ -d infra/.terraform ]; then
+      say "Running: terraform validate"
+      (cd infra && terraform validate -no-color) || fail "Terraform validate failed."
+    else
+      say "Skipping 'terraform validate' (run 'terraform init' first)."
+    fi
+  else
+    say "Terraform not found; skipping fmt/validate."
+  fi
+fi
+
+say "All checks passed."
+exit 0

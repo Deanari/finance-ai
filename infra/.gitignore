@@ -1,0 +1,41 @@
+# --- Terraform state & local artifacts ---
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# Local overrides (should never be committed)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Sensitive variables (keep out of git)
+*.tfvars
+*.tfvars.json
+# Plans
+tfplan
+*.tfplan
+# Local CLI config
+.terraformrc
+terraform.rc
+
+# --- Build artifacts (created by archive_file) ---
+build/
+build/*.zip
+
+# --- Lambda function local deps (don’t commit node_modules) ---
+lambdas/**/node_modules/
+lambdas/**/npm-debug.log
+lambdas/**/.npmrc
+lambdas/**/.env
+lambdas/**/.env.*
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Env files at repo root (if any) ---
+.env
+.env.*
