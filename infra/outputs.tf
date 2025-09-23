@@ -11,3 +11,7 @@ output "lambda_names" {
     aws_lambda_function.advice.function_name
   ]
 }
+
+output "dynamodb_table_name" {
+  value = aws_dynamodb_table.stori_challenge.name
+}

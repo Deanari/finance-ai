@@ -30,6 +30,10 @@ lambdas/**/.npmrc
 lambdas/**/.env
 lambdas/**/.env.*
 
+# --- Tools dependencies ---
+tools/node_modules
+tools/package-lock.json
+
 # --- OS / editor cruft ---
 .DS_Store
 Thumbs.db

@@ -1,0 +1,10 @@
+{
+  "type": "module",
+  "scripts": {
+    "import:dynamo": "TABLE_NAME=stori_challenge_transactions AWS_REGION=us-east-1 node scripts/import-dynamo.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.894.0",
+    "@aws-sdk/lib-dynamodb": "^3.894.0"
+  }
+}

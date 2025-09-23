@@ -73,6 +73,12 @@ resource "aws_lambda_function" "summary" {
   source_code_hash = data.archive_file.summary_zip.output_base64sha256
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
+
+  environment {
+    variables = {
+      TABLE_NAME = aws_dynamodb_table.stori_challenge.name
+    }
+  }
 }
 
 resource "aws_lambda_function" "timeline" {
@@ -84,6 +90,12 @@ resource "aws_lambda_function" "timeline" {
   source_code_hash = data.archive_file.timeline_zip.output_base64sha256
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
+
+  environment {
+    variables = {
+      TABLE_NAME = aws_dynamodb_table.stori_challenge.name
+    }
+  }
 }
 
 resource "aws_lambda_function" "advice" {
@@ -95,6 +107,60 @@ resource "aws_lambda_function" "advice" {
   source_code_hash = data.archive_file.advice_zip.output_base64sha256
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
+
+  environment {
+    variables = {
+      TABLE_NAME = aws_dynamodb_table.stori_challenge.name
+    }
+  }
+}
+
+
+# --- DynamoDB table (Provisioned 5/5 -> Free Tier) ---
+resource "aws_dynamodb_table" "stori_challenge" {
+  name         = "stori_challenge_transactions"
+  billing_mode = "PROVISIONED"
+
+  read_capacity  = 5
+  write_capacity = 5
+
+  hash_key  = "pk"
+  range_key = "sk"
+
+  attribute {
+    name = "pk"
+    type = "S"
+  }
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  deletion_protection_enabled = true
+}
+
+# Policy to allow Lambdas to read/write the table
+data "aws_iam_policy_document" "stori_challenge_table_access" {
+  statement {
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:BatchWriteItem",
+      "dynamodb:PutItem",
+      "dynamodb:GetItem",
+      "dynamodb:UpdateItem"
+    ]
+    resources = [aws_dynamodb_table.stori_challenge.arn]
+  }
+}
+
+resource "aws_iam_policy" "stori_challenge_table_access" {
+  name   = "stori-challenge-table-access"
+  policy = data.aws_iam_policy_document.stori_challenge_table_access.json
+}
+
+resource "aws_iam_role_policy_attachment" "attach_stori_challenge_table_access" {
+  role       = aws_iam_role.lambda_exec.name
+  policy_arn = aws_iam_policy.stori_challenge_table_access.arn
 }
 
 # -------------------------------------------
