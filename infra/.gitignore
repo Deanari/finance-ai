@@ -22,6 +22,7 @@ terraform.rc
 # --- Build artifacts (created by archive_file) ---
 build/
 build/*.zip
+layers/**/node_modules
 
 # --- Lambda function local deps (don’t commit node_modules) ---
 lambdas/**/node_modules/
@@ -29,6 +30,7 @@ lambdas/**/npm-debug.log
 lambdas/**/.npmrc
 lambdas/**/.env
 lambdas/**/.env.*
+lambdas/*/_shared
 
 # --- Tools dependencies ---
 tools/node_modules

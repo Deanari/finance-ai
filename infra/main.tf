@@ -13,7 +13,8 @@ provider "aws" {
 
 # Local naming prefix to keep resources grouped and easy to identify/destroy
 locals {
-  name_prefix = var.project_name
+  name_prefix  = var.project_name
+  lambda_funcs = ["summary", "timeline", "advice"]
 }
 
 # -------------------------------------------
@@ -23,18 +24,24 @@ data "archive_file" "summary_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas/summary"
   output_path = "${path.module}/build/summary.zip"
+
+  depends_on = [null_resource.sync_shared["summary"]]
 }
 
 data "archive_file" "timeline_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas/timeline"
   output_path = "${path.module}/build/timeline.zip"
+
+  depends_on = [null_resource.sync_shared["timeline"]]
 }
 
 data "archive_file" "advice_zip" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas/advice"
   output_path = "${path.module}/build/advice.zip"
+
+  depends_on = [null_resource.sync_shared["advice"]]
 }
 # -------------------------------------------
 # IAM role for Lambda execution with basic logging
@@ -64,6 +71,50 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
 # Lambda functions (Node.js 20)
 # Keep each endpoint isolated for better observability and least-privilege IAM
 # -------------------------------------------
+
+# --- LAYER (SDK Dynamo) ---
+resource "null_resource" "layer_deps" {
+  triggers = {
+    lock_hash = filesha256("${path.module}/layers/dynamo/nodejs/package-lock.json")
+  }
+  provisioner "local-exec" {
+    working_dir = "${path.module}/layers/dynamo/nodejs"
+    command     = "npm ci || npm i"
+  }
+}
+
+data "archive_file" "dynamo_layer_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/layers/dynamo/nodejs"
+  output_path = "${path.module}/build/dynamo-layer.zip"
+
+  depends_on = [null_resource.layer_deps]
+}
+
+resource "aws_lambda_layer_version" "dynamo" {
+  layer_name          = "stori-dynamo-sdk"
+  filename            = data.archive_file.dynamo_layer_zip.output_path
+  source_code_hash    = data.archive_file.dynamo_layer_zip.output_base64sha256
+  compatible_runtimes = ["nodejs20.x"]
+  description         = "AWS SDK v3 for DynamoDB shared"
+}
+
+## --- SHARED ---
+resource "null_resource" "sync_shared" {
+  for_each = toset(local.lambda_funcs)
+
+  triggers = {
+    shared_hash = jsonencode({
+      for f in fileset("${path.module}/lambdas/_shared", "**") :
+      f => filesha256("${path.module}/lambdas/_shared/${f}")
+    })
+  }
+
+  provisioner "local-exec" {
+    command = "rm -rf ${path.module}/lambdas/${each.value}/_shared && cp -R ${path.module}/lambdas/_shared ${path.module}/lambdas/${each.value}/_shared"
+  }
+}
+
 resource "aws_lambda_function" "summary" {
   function_name    = "${local.name_prefix}-summary"
   role             = aws_iam_role.lambda_exec.arn
@@ -73,6 +124,8 @@ resource "aws_lambda_function" "summary" {
   source_code_hash = data.archive_file.summary_zip.output_base64sha256
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
+
+  layers = [aws_lambda_layer_version.dynamo.arn]
 
   environment {
     variables = {
@@ -91,6 +144,8 @@ resource "aws_lambda_function" "timeline" {
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
 
+  layers = [aws_lambda_layer_version.dynamo.arn]
+
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.stori_challenge.name
@@ -107,6 +162,8 @@ resource "aws_lambda_function" "advice" {
   source_code_hash = data.archive_file.advice_zip.output_base64sha256
   timeout          = var.lambda_timeout_s
   memory_size      = var.lambda_memory_mb
+
+  layers = [aws_lambda_layer_version.dynamo.arn]
 
   environment {
     variables = {
@@ -144,6 +201,7 @@ data "aws_iam_policy_document" "stori_challenge_table_access" {
   statement {
     actions = [
       "dynamodb:Query",
+      "dynamodb:Scan",
       "dynamodb:BatchWriteItem",
       "dynamodb:PutItem",
       "dynamodb:GetItem",
