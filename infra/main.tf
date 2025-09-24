@@ -62,9 +62,52 @@ resource "aws_iam_role" "lambda_exec" {
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
 }
 
+resource "aws_iam_role" "lambda_exec_advice" {
+  name               = "${local.name_prefix}-lambda-role-advice"
+  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
+}
+
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "advice_lambda_logs" {
+  role       = aws_iam_role.lambda_exec_advice.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+## SQS for advice lambda
+resource "aws_sqs_queue" "advice_q" {
+  name                       = "${local.name_prefix}-advice-q"
+  visibility_timeout_seconds = 300
+
+}
+
+resource "aws_iam_role_policy" "advice_sqs_send" {
+  name = "advice-sqs-send"
+  role = aws_iam_role.lambda_exec_advice.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect : "Allow",
+      Action : ["sqs:SendMessage"],
+      Resource : aws_sqs_queue.advice_q.arn
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "advice_sqs_consume" {
+  name = "advice-sqs-consume"
+  role = aws_iam_role.lambda_exec_advice.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect : "Allow",
+      Action : ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      Resource : aws_sqs_queue.advice_q.arn
+    }]
+  })
 }
 
 # -------------------------------------------
@@ -85,7 +128,7 @@ resource "null_resource" "layer_deps" {
 
 data "archive_file" "dynamo_layer_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/layers/dynamo/nodejs"
+  source_dir  = "${path.module}/layers/dynamo"
   output_path = "${path.module}/build/dynamo-layer.zip"
 
   depends_on = [null_resource.layer_deps]
@@ -153,18 +196,17 @@ resource "aws_lambda_function" "timeline" {
   }
 }
 
-resource "aws_lambda_function" "advice" {
-  function_name    = "${local.name_prefix}-advice"
-  role             = aws_iam_role.lambda_exec.arn
+# GET /api/advice/payload
+resource "aws_lambda_function" "advice_payload" {
+  function_name    = "${local.name_prefix}-advice-payload"
+  role             = aws_iam_role.lambda_exec_advice.arn
   runtime          = "nodejs20.x"
-  handler          = "index.handler"
+  handler          = "index.payloadHandler"
   filename         = data.archive_file.advice_zip.output_path
   source_code_hash = data.archive_file.advice_zip.output_base64sha256
-  timeout          = var.lambda_timeout_s
-  memory_size      = var.lambda_memory_mb
-
-  layers = [aws_lambda_layer_version.dynamo.arn]
-
+  timeout          = 10
+  memory_size      = 512
+  layers           = [aws_lambda_layer_version.dynamo.arn]
   environment {
     variables = {
       TABLE_NAME = aws_dynamodb_table.stori_challenge.name
@@ -172,6 +214,83 @@ resource "aws_lambda_function" "advice" {
   }
 }
 
+# POST /api/advice (crear job)
+resource "aws_lambda_function" "advice_request" {
+  function_name    = "${local.name_prefix}-advice-request"
+  role             = aws_iam_role.lambda_exec_advice.arn
+  runtime          = "nodejs20.x"
+  handler          = "index.requestHandler"
+  filename         = data.archive_file.advice_zip.output_path
+  source_code_hash = data.archive_file.advice_zip.output_base64sha256
+  timeout          = 5
+  memory_size      = 512
+  layers           = [aws_lambda_layer_version.dynamo.arn]
+  environment {
+    variables = {
+      TABLE_NAME       = aws_dynamodb_table.stori_challenge.name
+      ADVICE_QUEUE_URL = aws_sqs_queue.advice_q.id
+    }
+  }
+}
+
+# GET /api/advice/status
+resource "aws_lambda_function" "advice_status" {
+  function_name    = "${local.name_prefix}-advice-status"
+  role             = aws_iam_role.lambda_exec_advice.arn
+  runtime          = "nodejs20.x"
+  handler          = "index.statusHandler"
+  filename         = data.archive_file.advice_zip.output_path
+  source_code_hash = data.archive_file.advice_zip.output_base64sha256
+  timeout          = 5
+  memory_size      = 512
+  layers           = [aws_lambda_layer_version.dynamo.arn]
+  environment {
+    variables = {
+      TABLE_NAME = aws_dynamodb_table.stori_challenge.name
+    }
+  }
+}
+
+# Worker SQS (Bedrock)
+resource "aws_lambda_function" "advice_worker" {
+  function_name    = "${local.name_prefix}-advice-worker"
+  role             = aws_iam_role.lambda_exec_advice.arn
+  runtime          = "nodejs20.x"
+  handler          = "worker.handler"
+  filename         = data.archive_file.advice_zip.output_path
+  source_code_hash = data.archive_file.advice_zip.output_base64sha256
+  timeout          = 400
+  memory_size      = 1536
+  layers           = [aws_lambda_layer_version.dynamo.arn]
+  environment {
+    variables = {
+      TABLE_NAME          = aws_dynamodb_table.stori_challenge.name
+      BEDROCK_MODEL_ID    = "openai.gpt-oss-20b-1:0"
+      BEDROCK_MAX_TOKENS  = "2588"
+      BEDROCK_TEMPERATURE = "0.3"
+    }
+  }
+}
+
+resource "aws_lambda_event_source_mapping" "advice_sqs_trigger" {
+  event_source_arn = aws_sqs_queue.advice_q.arn
+  function_name    = aws_lambda_function.advice_worker.arn
+  batch_size       = 1
+}
+
+resource "aws_iam_role_policy" "advice_bedrock" {
+  name = "advice-bedrock-invoke"
+  role = aws_iam_role.lambda_exec_advice.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Sid      = "BedrockInvoke",
+      Effect   = "Allow",
+      Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+      Resource = "*"
+    }]
+  })
+}
 
 # --- DynamoDB table (Provisioned 5/5 -> Free Tier) ---
 resource "aws_dynamodb_table" "stori_challenge" {
@@ -221,6 +340,12 @@ resource "aws_iam_role_policy_attachment" "attach_stori_challenge_table_access" 
   policy_arn = aws_iam_policy.stori_challenge_table_access.arn
 }
 
+resource "aws_iam_role_policy_attachment" "advice_table_access" {
+  role       = aws_iam_role.lambda_exec_advice.name
+  policy_arn = aws_iam_policy.stori_challenge_table_access.arn
+}
+
+
 # -------------------------------------------
 # CloudWatch log groups with retention
 # -------------------------------------------
@@ -234,8 +359,20 @@ resource "aws_cloudwatch_log_group" "lg_timeline" {
   retention_in_days = var.log_retention_days
 }
 
-resource "aws_cloudwatch_log_group" "lg_advice" {
-  name              = "/aws/lambda/${aws_lambda_function.advice.function_name}"
+resource "aws_cloudwatch_log_group" "lg_advice_payload" {
+  name              = "/aws/lambda/${aws_lambda_function.advice_payload.function_name}"
+  retention_in_days = var.log_retention_days
+}
+resource "aws_cloudwatch_log_group" "lg_advice_request" {
+  name              = "/aws/lambda/${aws_lambda_function.advice_request.function_name}"
+  retention_in_days = var.log_retention_days
+}
+resource "aws_cloudwatch_log_group" "lg_advice_status" {
+  name              = "/aws/lambda/${aws_lambda_function.advice_status.function_name}"
+  retention_in_days = var.log_retention_days
+}
+resource "aws_cloudwatch_log_group" "lg_advice_worker" {
+  name              = "/aws/lambda/${aws_lambda_function.advice_worker.function_name}"
   retention_in_days = var.log_retention_days
 }
 
@@ -253,9 +390,12 @@ resource "aws_apigatewayv2_api" "http_api" {
   protocol_type = "HTTP"
 
   cors_configuration {
-    allow_headers = ["content-type"]
-    allow_methods = ["GET", "POST", "OPTIONS"]
-    allow_origins = var.cors_allowed_origins
+    allow_headers     = ["content-type", "authorization", "accept", "x-requested-with", "x-api-key", "x-ai-mode"]
+    allow_methods     = ["GET", "POST", "OPTIONS"]
+    allow_origins     = var.cors_allowed_origins
+    expose_headers    = ["content-type"]
+    max_age           = 86400
+    allow_credentials = false
   }
 }
 
@@ -274,10 +414,24 @@ resource "aws_apigatewayv2_integration" "i_timeline" {
   payload_format_version = "2.0"
 }
 
-resource "aws_apigatewayv2_integration" "i_advice" {
+resource "aws_apigatewayv2_integration" "i_advice_payload" {
   api_id                 = aws_apigatewayv2_api.http_api.id
   integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.advice.invoke_arn
+  integration_uri        = aws_lambda_function.advice_payload.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_integration" "i_advice_request" {
+  api_id                 = aws_apigatewayv2_api.http_api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.advice_request.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_integration" "i_advice_status" {
+  api_id                 = aws_apigatewayv2_api.http_api.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.advice_status.invoke_arn
   payload_format_version = "2.0"
 }
 
@@ -294,10 +448,44 @@ resource "aws_apigatewayv2_route" "r_timeline" {
   target    = "integrations/${aws_apigatewayv2_integration.i_timeline.id}"
 }
 
+resource "aws_apigatewayv2_route" "r_advice_payload" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "GET /api/advice/payload"
+  target    = "integrations/${aws_apigatewayv2_integration.i_advice_payload.id}"
+}
+
 resource "aws_apigatewayv2_route" "r_advice" {
   api_id    = aws_apigatewayv2_api.http_api.id
   route_key = "POST /api/advice"
-  target    = "integrations/${aws_apigatewayv2_integration.i_advice.id}"
+  target    = "integrations/${aws_apigatewayv2_integration.i_advice_request.id}"
+}
+
+resource "aws_apigatewayv2_route" "r_advice_status" {
+  api_id    = aws_apigatewayv2_api.http_api.id
+  route_key = "GET /api/advice/status"
+  target    = "integrations/${aws_apigatewayv2_integration.i_advice_status.id}"
+}
+
+resource "aws_lambda_permission" "allow_apigw_advice_payload" {
+  statement_id  = "AllowAPIGatewayInvokeAdvicePayload"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.advice_payload.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
+}
+resource "aws_lambda_permission" "allow_apigw_advice_request" {
+  statement_id  = "AllowAPIGatewayInvokeAdviceRequest"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.advice_request.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
+}
+resource "aws_lambda_permission" "allow_apigw_advice_status" {
+  statement_id  = "AllowAPIGatewayInvokeAdviceStatus"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.advice_status.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }
 
 # Default stage with auto-deploy (no manual releases required)
@@ -339,14 +527,6 @@ resource "aws_lambda_permission" "allow_apigw_timeline" {
   statement_id  = "AllowAPIGatewayInvokeTimeline"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.timeline.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
-}
-
-resource "aws_lambda_permission" "allow_apigw_advice" {
-  statement_id  = "AllowAPIGatewayInvokeAdvice"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.advice.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.http_api.execution_arn}/*/*"
 }

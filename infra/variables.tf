@@ -22,6 +22,17 @@ variable "lambda_timeout_s" {
   default     = 10
 }
 
+variable "lambda_timeout_s_advice" {
+  type    = number
+  default = 28
+}
+
+variable "lambda_memory_mb_advice" {
+  type    = number
+  default = 1024
+}
+
+
 variable "log_retention_days" {
   description = "CloudWatch Logs retention in days for each Lambda's log group."
   type        = number
