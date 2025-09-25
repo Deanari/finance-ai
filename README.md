@@ -203,6 +203,8 @@ Jobs are stored under `pk = "adviceJob#<jobId>", sk = "meta"`.
 ---
 
 # Architecture
+
+![alt text](Flowchart.png)
 ```
 [ Client / Frontend ] 
         |
