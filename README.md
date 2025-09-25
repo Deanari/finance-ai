@@ -453,3 +453,10 @@ Some models (e.g., OSS via Bedrock) prepend **reasoning**. We:
 - **FE user experience**: “preview first” pattern hides model latency and still delivers value.
 
 ---
+
+## Cost snapshot
+
+At demo traffic levels the infra basically costs nothing because of serverless + free-tier friendly architecture.
+
+![alt text](cost_snapshot.png)
+> ChatGPT advised me *not* to paste this image here.  
