@@ -32,6 +32,73 @@ export AWS_PROFILE=stori-mvp
 export AWS_REGION=us-east-1
 ```
 
+### IAM user & local AWS profile (for Terraform)
+- Create a programmatic IAM user dedicated to this project and configure a local AWS profile so terraform and the Makefile use it consistently.
+- Create the IAM user (e.g., stori-mvp-terraform) and download its access keys.
+- Attach a practical policy (inline or managed). For a demo/MVP this set is fine; you can tighten resources later:
+
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action":["apigateway:*","lambda:*","logs:*","cloudwatch:*","dynamodb:*","iam:CreateRole","iam:DeleteRole","iam:GetRole","iam:PassRole","iam:AttachRolePolicy","iam:DetachRolePolicy","iam:PutRolePolicy","iam:DeleteRolePolicy","iam:TagRole","iam:UntagRole","iam:ListInstanceProfilesForRole","iam:ListRolePolicies","iam:ListAttachedRolePolicies","iam:ListRoleTags","iam:CreatePolicy","iam:TagPolicy","iam:GetPolicy","iam:GetRolePolicy","iam:GetPolicyVersion","iam:ListPolicyVersions","iam:CreatePolicyVersion","iam:DeletePolicy","iam:DeletePolicyVersion","sqs:createqueue","sqs:tagqueue","sqs:getqueueattributes","sqs:listqueuetags","sqs:deletequeue","sqs:setqueueattributes"],
+            "Resource": "*"
+        }
+    ]
+}
+```
+- Configure your local profile (the Makefile defaults to stori-mvp and us-east-1):
+
+```
+aws configure --profile stori-mvp
+# AWS Access Key ID: <paste>
+# AWS Secret Access Key: <paste>
+# Default region name: us-east-1
+# Default output format: json
+```
+- Use the profile when working in /infra (Makefile picks these up automatically):
+
+```
+export AWS_PROFILE=stori-mvp
+export AWS_DEFAULT_REGION=us-east-1
+
+make whoami   # sanity check
+make up       # terraform init/plan/apply + outputs
+make test     # smoke test endpoints
+
+```
+
+>Note: If you enable DynamoDB deletion protection in Terraform, you’ll need to manually turn it off before make down (destroy).
+
+### Load mock data into DynamoDB
+This repo includes a Node script to batch-write the mock transactions into DynamoDB.
+- Table: stori_challenge_transactions (PK=pk, SK=sk)
+- Input file expected by the script: ./mock_expense_and_income.json (at the repo root)
+  
+*Import command (macOS/Linux)*
+```
+# Run from the repo root
+AWS_PROFILE=stori-mvp AWS_REGION=us-east-1 \
+TABLE_NAME=stori_challenge_transactions \
+node scripts/import-dynamo.js
+```
+
+*Verify the data*
+```
+aws dynamodb scan \
+  --table-name stori_challenge_transactions \
+  --max-items 5 \
+  --output table \
+  --region us-east-1 --profile stori-mvp
+
+```
+*Troubleshooting*
+- Missing TABLE_NAME → Ensure you pass TABLE_NAME=stori_challenge_transactions.
+- File not found → Confirm mock_expense_and_income.json exists at the repo root.
+- Region/profile mismatch → Check AWS_REGION and AWS_PROFILE match your deployed table.
+
 ## 1) Configure AWS profile (one-time)
 
 ```
@@ -205,6 +272,7 @@ Jobs are stored under `pk = "adviceJob#<jobId>", sk = "meta"`.
 # Architecture
 
 ![alt text](Flowchart.png)
+
 ```
 [ Client / Frontend ] 
         |
